@@ -1,34 +1,24 @@
-name: Build TV APK
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
+[app]
+title = AnimeTV
+package.name = animetv
+package.domain = org.test
+version = 0.1
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+source.dir = .
+source.include_exts = py,png,jpg,kv,atlas,json
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+# 必须加上 lxml 和 python-vlc 来保证解析与播放正常工作
+requirements = python3,kivy,requests,lxml,python-vlc
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev cmake libffi-dev libssl-dev
-          pip install --upgrade pip
-          pip install buildozer cython==0.29.33
+# 最低兼容 Android 5.1 (API 21)
+android.minapi = 21
+android.api = 31
 
-      - name: Build APK with Buildozer
-        run: |
-          buildozer -v android debug
+# 权限：联网 + 保持屏幕常亮
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,WAKE_LOCK
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: animetv-apk
-          path: bin/*.apk
+# 允许明文 HTTP 流量，防止在高版本安卓或部分视频源上黑屏
+android.uses_cleartext_traffic = True
+
+orientation = landscape
+android.archs = arm64-v8a, armeabi-v7a
