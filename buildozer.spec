@@ -3,7 +3,6 @@ title = AnimeTV
 package.name = animetv
 package.domain = org.test
 version = 0.1
-version.regex = __version__ = ['"](.*)['"]
 
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
