@@ -7,14 +7,14 @@ version = 0.1
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
 
-# 使用 ffpyplayer 替代 python-vlc，确保 Android 端视频原生解码支持
 requirements = python3,kivy,requests,lxml,ffpyplayer
 
-# 最低兼容 Android 5.1 (API 21)
 android.minapi = 21
 android.api = 31
 
-# 自动同意 SDK 许可协议
+# 核心重点：强制锁定 NDK r25b，拒绝使用报错的 r28c
+android.ndk = 25b
+android.ndk_api = 21
 android.accept_sdk_license = True
 
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,WAKE_LOCK
