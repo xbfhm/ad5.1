@@ -7,15 +7,19 @@ version = 0.1
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
 
-requirements = python3,kivy,requests,lxml,ffpyplayer
+# 显式锁定 Python 为稳定的 3.10 版本，彻底规避 python 3.14 编译崩溃！
+requirements = python3==3.10.13,kivy,requests,lxml,ffpyplayer
 
 android.minapi = 21
 android.api = 31
 
-# 核心重点：强制锁定 NDK r25b，拒绝使用报错的 r28c
+# 锁定稳定版 NDK r25b
 android.ndk = 25b
 android.ndk_api = 21
 android.accept_sdk_license = True
+
+# 允许自动更新/修复 Android SDK
+android.skip_update = False
 
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,WAKE_LOCK
 android.uses_cleartext_traffic = True
