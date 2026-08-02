@@ -1,0 +1,22 @@
+[app]
+title = AnimeTV
+package.name = animetv
+package.domain = org.test
+source.dir = .
+source.include_exts = py,png,jpg,kv,atlas,json
+
+# 必须加上 lxml 和 python-vlc 来保证解析与播放正常工作
+requirements = python3,kivy,requests,lxml,python-vlc
+
+# 最低兼容 Android 5.1 (API 21)
+android.minapi = 21
+android.api = 31
+
+# 权限：联网 + 保持屏幕常亮
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,WAKE_LOCK
+
+# 允许明文 HTTP 流量，防止在高版本安卓或部分视频源上黑屏
+android.uses_cleartext_traffic = True
+
+orientation = landscape
+android.archs = arm64-v8a, armeabi-v7a
