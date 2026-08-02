@@ -23,6 +23,8 @@ jobs:
           pip install --upgrade pip setuptools wheel
           # 核心修复：强制回退并锁定 python-for-android 版本，迫使它使用稳定的 Python 3.10/3.11，拒绝 3.14！
           pip install buildozer==1.5.0 cython==3.0.11 python-for-android==2024.1.21
+          # 修复 sh 库版本冲突：python-for-android 2024.1.21 要求 sh<2.0,>=1.10
+          pip install "sh<2.0,>=1.10"
 
       - name: Build APK with Buildozer
         # 将所有的编译日志重定向保存到 build.log 文件中，防止终端截断
