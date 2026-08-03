@@ -28,13 +28,34 @@ jobs:
             zlib1g-dev libncurses5-dev libncursesw5-dev \
             cmake libffi-dev libssl-dev lld \
             libsqlite3-dev libxml2-dev libxslt1-dev
-          pip install --upgrade pip setuptools wheel
+          pip install --upgrade "pip==24.0" setuptools wheel
 
       - name: Install Buildozer & Python-for-Android (pinned versions)
         run: |
           pip install "sh<2.0,>=1.10"
           pip install buildozer==1.5.0 cython==3.0.11 python-for-android==2024.1.21
 
+      - name: Build APK with Buildozer
+        run: |
+          buildozer -v android debug > build.log 2>&1 || { \
+            echo "❌ Build failed! Printing last 300 lines of log:"; \
+            tail -n 300 build.log; \
+            exit 1; \
+          }
+
+      - name: Upload APK artifact (if successful)
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: animetv-apk
+          path: bin/*.apk
+
+      - name: Upload full build log (always)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: buildozer-full-log
+          path: build.log
       - name: Build APK with Buildozer
         run: |
           buildozer -v android debug > build.log 2>&1 || { \
