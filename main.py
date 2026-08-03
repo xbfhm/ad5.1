@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 import threading
+import sys
+import traceback
+import os
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -13,7 +16,41 @@ from kivy.clock import Clock
 from kivy.utils import platform
 from kivy.core.clipboard import Clipboard
 from kivy.core.text import LabelBase
-import os
+
+# ========================================================
+# 0. 崩溃日志记录（不依赖系统 logcat，App 自己把报错写入文件）
+#    崩溃后可以用甲壳虫 ADB 的文件管理功能，去下面这个路径把
+#    crash_log.txt 导出来查看：
+#    /sdcard/Android/data/org.test.animetv/files/crash_log.txt
+#    （如果该路径不可写，会退回写到 App 的私有目录，用甲壳虫
+#    ADB 的 run-as 或 file 功能也能拿到）
+# ========================================================
+def _get_crash_log_path():
+    candidates = []
+    if platform == 'android':
+        try:
+            from android.storage import app_storage_path  # noqa
+            candidates.append(os.path.join(app_storage_path(), "crash_log.txt"))
+        except Exception:
+            pass
+        candidates.append("/sdcard/Android/data/org.test.animetv/files/crash_log.txt")
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash_log.txt"))
+    return candidates
+
+def _global_exception_handler(exc_type, exc_value, exc_traceback):
+    error_text = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    for path in _get_crash_log_path():
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(error_text)
+            break
+        except Exception:
+            continue
+    # 依然调用系统默认处理（保留原有行为，比如控制台打印）
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+sys.excepthook = _global_exception_handler
 
 from rules_config import ANIME_SOURCES
 from rule_engine import MultiRuleEngine
