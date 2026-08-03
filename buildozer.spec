@@ -7,7 +7,7 @@ version = 0.1
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,otf
 
-requirements = python3,kivy,requests,lxml,ffpyplayer
+requirements = python3,kivy,requests,lxml
 
 android.minapi = 21
 android.api = 33
