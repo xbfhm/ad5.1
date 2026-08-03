@@ -7,12 +7,12 @@ version = 0.1
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,otf
 
-# 调整 Python 依赖以适配 p4a 编译环境，并锁定兼容的 sh 版本
-requirements = python3,kivy,requests,lxml,ffpyplayer,sh==1.14.3
+# 移除了 spec 中的 sh 锁定，避免 p4a 内部依赖冲突；保留核心编译依赖
+requirements = python3,kivy,requests,lxml,ffpyplayer
 
 android.minapi = 21
 android.api = 33
-android.ndk = 25b
+android.ndk = 28c
 android.ndk_api = 21
 android.accept_sdk_license = True
 
