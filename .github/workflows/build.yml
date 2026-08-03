@@ -32,8 +32,8 @@ jobs:
 
       - name: Install Buildozer & Python-for-Android (pinned versions)
         run: |
-          pip install buildozer==1.5.0 cython==3.0.11 python-for-android==2024.1.21
           pip install "sh<2.0,>=1.10"
+          pip install buildozer==1.5.0 cython==3.0.11 python-for-android==2024.1.21
 
       - name: Build APK with Buildozer
         run: |
