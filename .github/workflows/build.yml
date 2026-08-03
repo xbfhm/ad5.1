@@ -1,4 +1,4 @@
-name: Build TV APK
+Name: Build TV APK
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120           # 增加超时时间，避免大型编译被截断
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -17,7 +17,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'    # 保持与 p4a 兼容的稳定版本
+          python-version: '3.10'
 
       - name: Cache Buildozer & Android SDK/NDK
         uses: actions/cache@v4
@@ -25,9 +25,9 @@ jobs:
           path: |
             ~/.buildozer
             ~/.local/share/python-for-android
-          key: buildozer-cache-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-cache-v2-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-cache-
+            buildozer-cache-v2-
 
       - name: Install system dependencies
         run: |
@@ -42,17 +42,12 @@ jobs:
 
       - name: Install Buildozer & Python-for-Android (pinned versions)
         run: |
-          # 使用稳定版 buildozer 和 python-for-android，避免 Python 3.14 问题
           pip install buildozer==1.5.0 cython==3.0.11 python-for-android==2024.1.21
-          # 强制修复 sh 版本冲突 (p4a 要求 <2.0)
           pip install "sh<2.0,>=1.10"
 
       - name: Build APK with Buildozer
-        # 先清理旧缓存，再重新构建，确保不会因残留文件导致失败
         run: |
-          # 第4步：清理之前的编译产物
           buildozer android clean
-          # 第5步：正式构建，并将完整日志保存到 build.log
           buildozer -v android debug > build.log 2>&1 || { \
             echo "❌ Build failed! Printing last 300 lines of log:"; \
             tail -n 300 build.log; \
