@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/pip-constraints.txt
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -13,6 +16,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Create pip constraints file
+        run: echo "pip==24.0" > pip-constraints.txt
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -49,6 +55,7 @@ jobs:
         with:
           name: animetv-apk
           path: bin/*.apk
+          overwrite: true
 
       - name: Upload full build log (always)
         uses: actions/upload-artifact@v4
@@ -56,24 +63,4 @@ jobs:
         with:
           name: buildozer-full-log
           path: build.log
-      - name: Build APK with Buildozer
-        run: |
-          buildozer -v android debug > build.log 2>&1 || { \
-            echo "❌ Build failed! Printing last 300 lines of log:"; \
-            tail -n 300 build.log; \
-            exit 1; \
-          }
-
-      - name: Upload APK artifact (if successful)
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: animetv-apk
-          path: bin/*.apk
-
-      - name: Upload full build log (always)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: buildozer-full-log
-          path: build.log
+          overwrite: true
