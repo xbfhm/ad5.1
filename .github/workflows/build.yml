@@ -1,4 +1,4 @@
-Name: Build TV APK
+name: Build TV APK
 
 on:
   push:
