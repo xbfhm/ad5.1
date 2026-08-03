@@ -1,4 +1,5 @@
 name: Build TV APK
+
 on:
   push:
     branches: [ main, master ]
@@ -7,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 120           # 增加超时时间，避免大型编译被截断
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -14,33 +17,57 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.10'    # 保持与 p4a 兼容的稳定版本
+
+      - name: Cache Buildozer & Android SDK/NDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            ~/.local/share/python-for-android
+          key: buildozer-cache-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-cache-
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev cmake libffi-dev libssl-dev lld libsqlite3-dev libxml2-dev libxslt1-dev
+          sudo apt-get install -y \
+            git zip unzip openjdk-17-jdk \
+            python3-pip autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev \
+            cmake libffi-dev libssl-dev lld \
+            libsqlite3-dev libxml2-dev libxslt1-dev
           pip install --upgrade pip setuptools wheel
-          # 核心修复：强制回退并锁定 python-for-android 版本，迫使它使用稳定的 Python 3.10/3.11，拒绝 3.14！
+
+      - name: Install Buildozer & Python-for-Android (pinned versions)
+        run: |
+          # 使用稳定版 buildozer 和 python-for-android，避免 Python 3.14 问题
           pip install buildozer==1.5.0 cython==3.0.11 python-for-android==2024.1.21
-          # 修复 sh 库版本冲突：python-for-android 2024.1.21 要求 sh<2.0,>=1.10
+          # 强制修复 sh 版本冲突 (p4a 要求 <2.0)
           pip install "sh<2.0,>=1.10"
 
       - name: Build APK with Buildozer
-        # 将所有的编译日志重定向保存到 build.log 文件中，防止终端截断
+        # 先清理旧缓存，再重新构建，确保不会因残留文件导致失败
         run: |
-          buildozer -v android debug > build.log 2>&1 || { echo "Build failed!"; tail -n 300 build.log; exit 1; }
+          # 第4步：清理之前的编译产物
+          buildozer android clean
+          # 第5步：正式构建，并将完整日志保存到 build.log
+          buildozer -v android debug > build.log 2>&1 || { \
+            echo "❌ Build failed! Printing last 300 lines of log:"; \
+            tail -n 300 build.log; \
+            exit 1; \
+          }
 
-      - name: Upload APK artifact
+      - name: Upload APK artifact (if successful)
         uses: actions/upload-artifact@v4
         if: success()
         with:
           name: animetv-apk
           path: bin/*.apk
 
-      - name: Upload Error Log
+      - name: Upload full build log (always)
         uses: actions/upload-artifact@v4
-        # 无论成功还是失败，都将完整的日志文件作为附件上传，方便我们直接下载查看
         if: always()
         with:
           name: buildozer-full-log
