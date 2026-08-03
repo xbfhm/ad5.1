@@ -1,1 +1,9 @@
-[]
+[
+    {
+        "name": "示例番剧名称",
+        "episode": "第01集",
+        "page_url": "https://www.agedm.io/play/example_1",
+        "progress": 0
+    }
+]
+
