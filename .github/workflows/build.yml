@@ -43,6 +43,7 @@ jobs:
 
       - name: Build APK with Buildozer
         run: |
+          export JAVA_HOME=$JAVA_HOME_17_X64
           buildozer -v android debug > build.log 2>&1 || { \
             echo "❌ Build failed! Printing last 300 lines of log:"; \
             tail -n 300 build.log; \
