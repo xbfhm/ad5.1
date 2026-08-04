@@ -11,7 +11,7 @@ requirements = python3==3.11.9,hostpython3==3.11.9,kivy,requests,lxml==5.2.2,pyj
 
 android.minapi = 21
 android.api = 33
-android.ndk = 27c
+android.ndk = 25b
 android.ndk_api = 21
 android.accept_sdk_license = True
 
