@@ -52,16 +52,45 @@ def _global_exception_handler(exc_type, exc_value, exc_traceback):
 
 sys.excepthook = _global_exception_handler
 
+# ========================================================
+# 0b. 启动过程"打卡"日志：每完成一个启动阶段就立刻写一行并
+#     flush，哪怕最后进程被系统直接杀掉（没有任何 Python 异常），
+#     也能通过这个文件看到卡在了哪一步。
+#     文件路径同崩溃日志：
+#     /sdcard/Android/data/org.test.animetv/files/startup_log.txt
+# ========================================================
+def _checkpoint(msg):
+    text_line = f"{msg}\n"
+    for path in _get_crash_log_path():
+        startup_path = path.replace("crash_log.txt", "startup_log.txt")
+        try:
+            os.makedirs(os.path.dirname(startup_path), exist_ok=True)
+            with open(startup_path, "a", encoding="utf-8") as f:
+                f.write(text_line)
+                f.flush()
+                os.fsync(f.fileno())
+            break
+        except Exception:
+            continue
+
+_checkpoint("[1] Python 模块开始加载 (sys.excepthook 已设置)")
+
 from rules_config import ANIME_SOURCES
+_checkpoint("[2] rules_config 导入成功")
+
 from rule_engine import MultiRuleEngine
+_checkpoint("[3] rule_engine 导入成功")
 
 # 兼容手机键盘弹出时，界面自适应移动不遮挡输入框
 Window.softinput_mode = "below_target"
+_checkpoint("[4] Window.softinput_mode 设置完成")
 
 # 注册中文字体为默认字体，否则中文会显示为方框/空白
 # NotoSansCJK-Regular.otf 需要放在项目根目录（跟 main.py 同级）
 _FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansCJK-Regular.otf")
+_checkpoint(f"[5] 准备注册字体，路径: {_FONT_PATH}，文件是否存在: {os.path.exists(_FONT_PATH)}")
 LabelBase.register(name="Roboto", fn_regular=_FONT_PATH)
+_checkpoint("[6] 字体注册成功")
 # 用 "Roboto" 这个名字覆盖注册，是因为 Kivy 内置控件（Button、TextInput 等）
 # 默认都引用 "Roboto" 这个字体名，覆盖后不用逐个控件手动指定 font_name
 
@@ -130,19 +159,26 @@ class TVVideoController:
 class AnimeTVAppView(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
+        _checkpoint("[8] AnimeTVAppView.__init__ 开始")
         self.source_keys = list(ANIME_SOURCES.keys())
         self.current_source_idx = 0
         self.engine = MultiRuleEngine(ANIME_SOURCES[self.source_keys[self.current_source_idx]])
+        _checkpoint("[9] MultiRuleEngine 初始化成功")
 
         self.episodes = []
         self.current_ep_index = 0
         self.current_speed = 1.0
         self.player = TVVideoController()
+        _checkpoint("[10] TVVideoController 初始化成功")
 
         self._build_top_bar()
+        _checkpoint("[11] _build_top_bar 完成")
         self._build_main_area()
+        _checkpoint("[12] _build_main_area 完成")
         self._build_control_bar()
+        _checkpoint("[13] _build_control_bar 完成")
         self._build_episode_list()
+        _checkpoint("[14] _build_episode_list 完成，界面构建全部结束")
 
     def _build_top_bar(self):
         top_bar = BoxLayout(size_hint_y=0.1, spacing=10, padding=5)
@@ -302,9 +338,14 @@ class AnimeTVAppView(BoxLayout):
 # ========================================================
 class AnimeTVApp(App):
     def build(self):
+        _checkpoint("[15] App.build() 开始 (即将创建 Window)")
         # 整体背景色调设为深蓝色视听风格
         Window.clearcolor = (0.1, 0.1, 0.15, 1)
-        return AnimeTVAppView()
+        view = AnimeTVAppView()
+        _checkpoint("[16] App.build() 即将 return，界面对象已创建成功")
+        return view
 
 if __name__ == '__main__':
+    _checkpoint("[7] 即将调用 AnimeTVApp().run() (进入 Kivy/SDL2 底层启动)")
     AnimeTVApp().run()
+    _checkpoint("[99] AnimeTVApp().run() 正常退出（一般不会走到这里，走到说明是正常关闭而非崩溃）")
