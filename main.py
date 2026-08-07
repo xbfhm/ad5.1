@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-AnimeTV - 海信 VIDAA V1 电视适配版 (Android 5.1.1 / API 22 / 2GB内存 / 遥控器操作)
+AnimeTV v0.3 - 海信 VIDAA V1 电视适配版 (Android 5.1.1 / API 22 / 2GB内存 / 遥控器)
 =============================================================================
-适配要点:
-  1. 纯标准库网络(无 lxml/requests), 大幅降低内存占用, 避免 OOM 闪退
-  2. 瘦身中文字体(5.7MB), 加快启动, 减少内存
-  3. 遥控器 DPAD 全导航 + OK 确认 + BACK 返回, 无需鼠标
-  4. 1080p 大字体自适应布局
-  5. 播放历史自动记忆, 开机一键续看
-  6. 播放交给系统/VLC/MX Player, 支持 m3u8
-  7. 所有异常捕获写日志, 不闪退
+v0.3 新增:
+  * 内置播放器(ffpyplayer/ffmpeg 内核), 软件内直接播放 m3u8, 无需外部播放器
+  * 外部播放改用系统选择器(解决手机上只有迅雷/找不到其他播放器)
+  * 自动连播: 一集播完自动下一集
+  * 双架构(arm64+v7a) 兼容电视32位镜像
+  * 电视端启动兼容加固(低内存/老GPU)
 """
 import os
 import sys
@@ -18,7 +16,7 @@ import traceback
 
 # ---- Kivy 全局配置(必须在创建 Window 之前) ----
 from kivy.config import Config
-Config.set('graphics', 'maxfps', '30')          # 电视 UI 30fps 足够, 省电省内存
+Config.set('graphics', 'maxfps', '30')          # 电视 UI 30fps 足够
 Config.set('graphics', 'multisamples', '0')     # 关闭 MSAA, 老 GPU(Mali-450) 更稳
 Config.set('kivy', 'keyboard_mode', 'systemandmulti')
 Config.set('input', 'mouse', 'mouse,disable_multitouch')
@@ -30,13 +28,15 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.video import Video
 from kivy.core.window import Window
 from kivy.clock import Clock
 from kivy.utils import platform
 from kivy.core.text import LabelBase
 
 # ================================================================
-# 0. 崩溃日志 + 启动打卡 (App 自己写文件, 不依赖 logcat)
+# 0. 崩溃日志 + 启动打卡
 # ================================================================
 def _log_paths():
     paths = []
@@ -61,16 +61,16 @@ def _write_log(msg, filename):
         except Exception:
             continue
 
-def _checkpoint(msg):
-    _write_log(f"[{time_str()}] {msg}", "startup.log")
-
-def time_str():
+def _time_str():
     import datetime
     return datetime.datetime.now().strftime("%m-%d %H:%M:%S")
 
+def _checkpoint(msg):
+    _write_log(f"[{_time_str()}] {msg}", "startup.log")
+
 def _global_excepthook(exc_type, exc_value, exc_tb):
     text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    _write_log(f"\n===== {time_str()} CRASH =====\n{text}", "crash.log")
+    _write_log(f"\n===== {_time_str()} CRASH =====\n{text}", "crash.log")
     try:
         sys.__excepthook__(exc_type, exc_value, exc_tb)
     except Exception:
@@ -79,12 +79,12 @@ def _global_excepthook(exc_type, exc_value, exc_tb):
 sys.excepthook = _global_excepthook
 _checkpoint("[1] 模块加载开始")
 
-# ---- 引擎 (纯标准库) ----
+# ---- 引擎 ----
 from engine.age_api import (AgeError, search, detail, episodes,
                             parse_video_url, catalog, home)
 _checkpoint("[2] age_api 导入成功")
 
-# ---- 注册中文字体 ----
+# ---- 字体 ----
 _FONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansCJK-TV.otf")
 if not os.path.exists(_FONT):
     _FONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NotoSansCJK-Regular.otf")
@@ -93,10 +93,9 @@ try:
     _checkpoint("[3] 字体注册成功 " + _FONT)
 except Exception as e:
     _checkpoint(f"[3] 字体注册失败: {e}")
-    LabelBase.register(name="Roboto", fn_regular=_FONT)
 
 # ================================================================
-# 1. TV 遥控器按钮 (焦点高亮)
+# 1. TV 遥控器按钮
 # ================================================================
 class TVButton(Button):
     def __init__(self, **kw):
@@ -113,7 +112,6 @@ class TVButton(Button):
 
     @staticmethod
     def _fs(v):
-        # 1080p 基准, 按窗口宽度缩放, 保证电视上字体够大
         try:
             w = Window.width or 1920
             return max(20, int(v * w / 1920))
@@ -132,55 +130,56 @@ class TVButton(Button):
             self.bold = False
 
 # ================================================================
-# 2. 系统播放器控制器 (Intent 调外部播放器)
+# 2. 外部播放器控制器 (内置播放优先, 外置为补充)
 # ================================================================
 class TVPlayer:
-    """优先 VLC -> MX Player -> 系统播放器; 支持 m3u8/mp4"""
+    """内置(ffpyplayer)为主; 外部: 优先 VLC/MX, 也可弹系统选择器"""
     PACKAGES = [
         ("org.videolan.vlc", "VLC"),
         ("com.mxtech.videoplayer.ad", "MX Player"),
         ("com.mxtech.videoplayer", "MX Player"),
     ]
 
+    def _base_intent(self, url):
+        from jnius import autoclass
+        Intent = autoclass('android.content.Intent')
+        Uri = autoclass('android.net.Uri')
+        mime = "application/x-mpegURL" if ".m3u8" in url else "video/*"
+        intent = Intent(Intent.ACTION_VIEW)
+        intent.setDataAndType(Uri.parse(url), mime)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return intent
+
     def play(self, url):
+        """外部播放: 优先 VLC/MX Player, 否则系统选择器"""
         if platform != 'android':
-            print("[非Android环境] 视频地址:", url)
-            return "非Android环境, 无法调起播放器"
+            return "非Android环境"
         try:
             from jnius import autoclass, cast
-            Intent = autoclass('android.content.Intent')
-            Uri = autoclass('android.net.Uri')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            PackageManager = autoclass('android.content.pm.PackageManager')
-            mime = "application/x-mpegURL" if ".m3u8" in url else "video/*"
-
             activity = cast('android.app.Activity', PythonActivity.mActivity)
             pm = activity.getPackageManager()
-            intent = Intent(Intent.ACTION_VIEW)
-            intent.setDataAndType(Uri.parse(url), mime)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-            # 1) 依次尝试指定播放器
+            intent = self._base_intent(url)
             for pkg, name in self.PACKAGES:
                 try:
                     pm.getPackageInfo(pkg, 0)
                     intent.setPackage(pkg)
                     activity.startActivity(intent)
-                    return f"已交给 {name} 播放"
+                    return f"已交给 {name}"
                 except Exception:
                     continue
-            # 2) 回退系统播放器
-            intent2 = Intent(Intent.ACTION_VIEW)
-            intent2.setDataAndType(Uri.parse(url), mime)
-            intent2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            activity.startActivity(intent2)
-            return "已交给系统播放器"
+            # 系统选择器: 列出所有能处理的 App (VLC/MX/浏览器/迅雷...)
+            Intent = self._base_intent.__globals__['autoclass']('android.content.Intent')
+            chooser = Intent.createChooser(self._base_intent(url), "选择播放器")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            activity.startActivity(chooser)
+            return "请选择播放器"
         except Exception as e:
-            _write_log(f"播放器调用失败: {e}\nurl={url}", "crash.log")
-            return f"播放器调用失败: {e}"
+            _write_log(f"外部播放器调用失败: {e}\nurl={url}", "crash.log")
+            return f"外部播放器调用失败: {e}"
 
 # ================================================================
-# 3. 遥控器焦点导航
+# 3. 遥控器焦点导航 (主页)
 # ================================================================
 class FocusNav:
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT = 273, 274, 276, 275
@@ -188,9 +187,9 @@ class FocusNav:
 
     def __init__(self, view):
         self.view = view
-        self.items = []          # 可导航按钮列表
+        self.items = []
         self.index = -1
-        self.editable = None     # 搜索输入框
+        self.editable = None
         Window.bind(on_key_down=self._on_key)
 
     def add(self, btn):
@@ -211,7 +210,7 @@ class FocusNav:
 
     def _set_index(self, i):
         if 0 <= i < len(self.items):
-            if self.index >= 0 and self.index < len(self.items):
+            if 0 <= self.index < len(self.items):
                 self.items[self.index].set_focus(False)
             self.index = i
             self.items[i].set_focus(True)
@@ -222,7 +221,6 @@ class FocusNav:
             self._set_index(0)
 
     def _ensure_visible(self, w):
-        """焦点按钮滚入可视区域"""
         sv = None
         node = w
         for _ in range(6):
@@ -235,11 +233,10 @@ class FocusNav:
         if sv is None:
             return
         try:
-            # 按钮在 ScrollView 内的坐标
             sx, sy = w.to_window(w.x, w.y)
             svx, svy = sv.to_window(sv.x, sv.y)
-            svw, svh = sv.width, sv.height
-            rx, ry = sx - svx, sy - svy
+            svh = sv.height
+            ry = sy - svy
             if ry < 0:
                 sv.scroll_y = min(1.0, sv.scroll_y + (-ry) / (sv.height or 1))
             elif ry + w.height > svh:
@@ -258,7 +255,6 @@ class FocusNav:
             c1 = (cur.center_x, cur.center_y) if cur else (0, 0)
             c2 = (w.center_x, w.center_y)
             vx, vy = c2[0] - c1[0], c2[1] - c1[1]
-            # 方向过滤
             if dx > 0 and vx <= 8:
                 continue
             if dx < 0 and vx >= -8:
@@ -274,16 +270,18 @@ class FocusNav:
 
     def _on_key(self, window, key, scancode, codepoint, modifier, **kw):
         try:
-            if key == self.KEY_BACK or key == self.KEY_BACKSPACE:
+            # 播放页激活时, 按键交给播放页
+            if self.view.is_playing:
+                return self.view.player_screen.handle_key(key)
+            if key in (self.KEY_BACK, self.KEY_BACKSPACE):
                 return self.view.on_back()
             if self.editable is not None and self.editable.focus:
-                # 输入框聚焦时: OK=收起并搜索, 其他交给输入框
-                if key == self.KEY_OK or key == self.KEY_SPACE:
+                if key in (self.KEY_OK, self.KEY_SPACE):
                     self.editable.focus = False
                     self.view.do_search()
                     return True
                 return False
-            if key == self.KEY_OK or key == self.KEY_SPACE:
+            if key in (self.KEY_OK, self.KEY_SPACE):
                 if 0 <= self.index < len(self.items):
                     btn = self.items[self.index]
                     if hasattr(btn, 'on_ok'):
@@ -309,27 +307,186 @@ class FocusNav:
             return False
 
 # ================================================================
-# 4. 主界面
+# 4. 内置播放器页面
+# ================================================================
+class PlayerScreen(BoxLayout):
+    """全屏内置播放: 视频 + 底部控制条, 遥控器操作"""
+
+    def __init__(self, view, **kw):
+        super().__init__(orientation='vertical', **kw)
+        self.view = view
+        self.buttons = []
+        self.btn_index = -1
+        self.cur_url = ""
+        self.cur_ep = None
+
+        # 视频区
+        self.video = Video(state='pause', options={'allow_stretch': True})
+        self.video.bind(eos=self._on_eos)
+        self.video.bind(state=lambda *a: self._sync_pause_btn())
+        self.add_widget(self.video)
+
+        # 控制条
+        bar = BoxLayout(size_hint_y=None, height=self._px(64), spacing=self._px(8),
+                        padding=[self._px(10), self._px(4)])
+        self.btn_pause = self._mk("⏸ 暂停", self._toggle_pause)
+        self.btn_prev = self._mk("◀ 上一集", self._prev_ep)
+        self.btn_next = self._mk("下一集 ▶", self._next_ep)
+        self.btn_line = self._mk("换线路", self._switch_line)
+        self.btn_external = self._mk("外部播放", self._external)
+        self.btn_exit = self._mk("退出播放", self._exit)
+        for b in (self.btn_pause, self.btn_prev, self.btn_next,
+                  self.btn_line, self.btn_external, self.btn_exit):
+            bar.add_widget(b)
+        self.add_widget(bar)
+
+        # 初始焦点
+        self._focus(0)
+
+    def _px(self, v):
+        try:
+            w = Window.width or 1920
+            return max(20, int(v * w / 1920))
+        except Exception:
+            return v
+
+    def _mk(self, text, cb):
+        b = TVButton(text=text, size_hint_x=0.18)
+        b.bind(on_release=lambda inst: cb())
+        self.buttons.append(b)
+        return b
+
+    def _focus(self, i):
+        if not self.buttons:
+            return
+        i = max(0, min(i, len(self.buttons) - 1))
+        if 0 <= self.btn_index < len(self.buttons):
+            self.buttons[self.btn_index].set_focus(False)
+        self.btn_index = i
+        self.buttons[i].set_focus(True)
+
+    # ---- 播放控制 ----
+    def play(self, url, ep):
+        self.cur_url = url
+        self.cur_ep = ep
+        self.video.source = url
+        self.video.state = 'play'
+        self._sync_pause_btn()
+
+    def _sync_pause_btn(self):
+        try:
+            playing = self.video.state == 'play'
+            self.btn_pause.text = "⏸ 暂停" if playing else "▶ 播放"
+        except Exception:
+            pass
+
+    def _toggle_pause(self):
+        try:
+            if self.video.state == 'play':
+                self.video.state = 'pause'
+            else:
+                self.video.state = 'play'
+            self._sync_pause_btn()
+        except Exception as e:
+            self._toast(f"暂停失败: {e}")
+
+    def _seek(self, delta):
+        try:
+            t = self.video.position + delta
+            self.video.seek(max(0, t))
+        except Exception:
+            pass
+
+    def _on_eos(self, *a):
+        # 播完自动下一集
+        self._toast("本集播放完毕, 自动下一集...")
+        self.view._next_ep()
+
+    def _on_error(self, *a):
+        self._toast("视频解码失败, 可尝试「换线路」或「外部播放」")
+
+    def _prev_ep(self):
+        self.view._prev_ep()
+
+    def _next_ep(self):
+        self.view._next_ep()
+
+    def _switch_line(self):
+        self.view._switch_line()
+        self._toast(f"已切换线路: {self.view.btn_line.text}")
+
+    def _external(self):
+        if self.cur_url:
+            msg = self.view.player.play(self.cur_url)
+            self._toast(msg)
+
+    def _exit(self):
+        self.view.close_player()
+
+    def _toast(self, msg):
+        try:
+            self.view._info("▶ 正在播放中...\n\n" + msg)
+        except Exception:
+            pass
+
+    # ---- 遥控器按键 ----
+    def handle_key(self, key):
+        if key in (FocusNav.KEY_BACK, FocusNav.KEY_BACKSPACE):
+            self._exit()
+            return True
+        if key in (FocusNav.KEY_OK, FocusNav.KEY_SPACE):
+            if 0 <= self.btn_index < len(self.buttons):
+                b = self.buttons[self.btn_index]
+                if hasattr(b, 'on_ok'):
+                    b.on_ok()
+                else:
+                    b.dispatch('on_release')
+            else:
+                self._toggle_pause()
+            return True
+        if key == FocusNav.KEY_LEFT:
+            if 0 <= self.btn_index < len(self.buttons):
+                self._focus(self.btn_index - 1)
+            else:
+                self._seek(-15)
+            return True
+        if key == FocusNav.KEY_RIGHT:
+            if 0 <= self.btn_index < len(self.buttons):
+                self._focus(self.btn_index + 1)
+            else:
+                self._seek(15)
+            return True
+        if key == FocusNav.KEY_UP:
+            self._focus(-1 if self.btn_index <= 0 else self.btn_index)
+            return True
+        if key == FocusNav.KEY_DOWN:
+            self._focus(self.btn_index)
+            return True
+        return False
+
+# ================================================================
+# 5. 主界面
 # ================================================================
 class AnimeTVAppView(BoxLayout):
     def __init__(self, **kw):
         super().__init__(orientation='vertical', **kw)
         _checkpoint("[4] 主视图初始化")
+        self.is_playing = False
         self.history_file = self._history_path()
         self.history = self._load_history()
-        self.detail_data = None      # 当前番详情
-        self.ep_list = []            # 当前集列表(含线路)
-        self.ep_index = 0            # 当前集序号(在 ep_list 内)
-        self.current_line = None     # 当前线路
+        self.detail_data = None
+        self.ep_list = []
+        self.ep_index = 0
+        self.current_line = None
         self.cur_aid = None
         self.cur_name = ""
-        self.busy = False            # 防重复操作
+        self.busy = False
         self.player = TVPlayer()
+        self.player_screen = None   # 由 App.build 注入
         self.nav = FocusNav(self)
 
         self._build_ui()
         _checkpoint("[5] UI 构建完成")
-        # 初始展示
         self._show_home()
         self.nav.focus_first()
 
@@ -356,7 +513,6 @@ class AnimeTVAppView(BoxLayout):
                 import json
                 with open(self.history_file, encoding="utf-8") as f:
                     data = json.load(f)
-                # 清洗: 只保留有效记录
                 return [h for h in data if isinstance(h, dict) and h.get("aid")]
         except Exception:
             pass
@@ -393,7 +549,6 @@ class AnimeTVAppView(BoxLayout):
         return b
 
     def _build_ui(self):
-        # ---- 顶部栏 ----
         top = BoxLayout(size_hint_y=None, height=self._px(64), spacing=self._px(8),
                         padding=[self._px(10), self._px(4)])
         self.btn_home = self._mk_button("首页", cb=lambda *a: self._show_home())
@@ -407,15 +562,12 @@ class AnimeTVAppView(BoxLayout):
         self.nav.editable = self.input_search
         self.btn_search = self._mk_button("搜索", cb=lambda *a: self.do_search(), fs=28)
         self.btn_resume = self._mk_button("续看", cb=lambda *a: self._resume_last())
-        top.add_widget(self.btn_home)
-        top.add_widget(self.btn_catalog)
-        top.add_widget(self.btn_history)
+        for b in (self.btn_home, self.btn_catalog, self.btn_history,
+                  self.btn_search, self.btn_resume):
+            top.add_widget(b)
         top.add_widget(self.input_search)
-        top.add_widget(self.btn_search)
-        top.add_widget(self.btn_resume)
         self.add_widget(top)
 
-        # ---- 主区域: 左信息 / 右列表 ----
         main = BoxLayout(size_hint_y=0.58, spacing=self._px(8), padding=self._px(8))
         self.info_label = Label(
             text="", font_size=self._px(30), halign='left', valign='top',
@@ -431,22 +583,18 @@ class AnimeTVAppView(BoxLayout):
         main.add_widget(self.scroll_list)
         self.add_widget(main)
 
-        # ---- 控制栏 ----
         ctrl = BoxLayout(size_hint_y=None, height=self._px(60), spacing=self._px(10),
                          padding=[self._px(10), self._px(4)])
         self.btn_prev = self._mk_button("◀ 上一集", cb=lambda *a: self._prev_ep())
-        self.btn_play = self._mk_button("▶ 播放", cb=lambda *a: self._play_current(), fs=30)
+        self.btn_play = self._mk_button("▶ 内置播放", cb=lambda *a: self._play_current(), fs=30)
         self.btn_next = self._mk_button("下一集 ▶", cb=lambda *a: self._next_ep())
         self.btn_line = self._mk_button("线路: -", cb=lambda *a: self._switch_line())
-        self.btn_copy = self._mk_button("复制直链", cb=lambda *a: self._copy_url())
-        ctrl.add_widget(self.btn_prev)
-        ctrl.add_widget(self.btn_play)
-        ctrl.add_widget(self.btn_next)
-        ctrl.add_widget(self.btn_line)
-        ctrl.add_widget(self.btn_copy)
+        self.btn_external = self._mk_button("外部播放", cb=lambda *a: self._external_current())
+        for b in (self.btn_prev, self.btn_play, self.btn_next,
+                  self.btn_line, self.btn_external):
+            ctrl.add_widget(b)
         self.add_widget(ctrl)
 
-        # ---- 集数区 ----
         self.scroll_eps = ScrollView(size_hint_y=None, height=self._px(130))
         self.grid_eps = GridLayout(cols=10, spacing=self._px(5), size_hint_y=None,
                                    padding=[self._px(8), self._px(5)])
@@ -454,7 +602,7 @@ class AnimeTVAppView(BoxLayout):
         self.scroll_eps.add_widget(self.grid_eps)
         self.add_widget(self.scroll_eps)
 
-    # ---------- 状态提示 ----------
+    # ---------- 状态 ----------
     def _info(self, text):
         self.info_label.text = text
 
@@ -462,9 +610,7 @@ class AnimeTVAppView(BoxLayout):
         self.busy = True
         self._info("⏳ " + msg + "\n\n请稍候...")
 
-    # ---------- 线程工具 ----------
     def _thread(self, fn):
-        # 入口已做 busy 检查, 这里直接启动
         threading.Thread(target=fn, daemon=True).start()
 
     def _ui(self, fn):
@@ -498,7 +644,7 @@ class AnimeTVAppView(BoxLayout):
 
     def _home_error(self, msg):
         self.busy = False
-        self._info(f"首页加载失败: {msg}\n\n可尝试「搜索」或「新番」")
+        self._info(f"加载失败: {msg}\n\n可尝试「搜索」或「新番」")
 
     def _show_catalog(self):
         if self.busy:
@@ -523,7 +669,7 @@ class AnimeTVAppView(BoxLayout):
             self.busy = False
             self._info("暂无播放历史\n\n看过的番会记录在这里, 点击「续看」可快速回到上次位置")
             return
-        items = [{"name": f"{h['name']}  ▶ {h['ep']}", "id": h["aid"], "ep": h.get("ep", 0),
+        items = [{"name": f"{h['name']}  ▶ {h['ep']}", "id": h["aid"], "ep": h.get("ep_idx", 0),
                   "line": h.get("line")} for h in self.history]
         self._render_list(title="🕘 播放历史(OK=恢复播放)", items=items)
 
@@ -533,7 +679,7 @@ class AnimeTVAppView(BoxLayout):
             self._info("暂无历史记录")
             return
         h = self.history[0]
-        self._open_anime(h["aid"], h["name"], h.get("ep", 0), h.get("line"))
+        self._open_anime(h["aid"], h["name"], h.get("ep_idx", 0), h.get("line"))
 
     # ---------- 搜索 ----------
     def do_search(self):
@@ -565,7 +711,7 @@ class AnimeTVAppView(BoxLayout):
                  for r in rs]
         self._render_list(title=f"🔍 搜索结果: {kw} ({len(rs)})", items=items)
 
-    # ---------- 通用列表渲染 ----------
+    # ---------- 列表渲染 ----------
     def _clear_list(self):
         self.grid_list.clear_widgets()
         for b in list(self.nav.items):
@@ -587,12 +733,11 @@ class AnimeTVAppView(BoxLayout):
         if not aid:
             return
         name = item.get("name", "")
-        # 去掉前缀标签
         for pre in ("🔥", "📺", "🕘", "NEW ", "2026冬季 | ", "2026春季 | ", "2026夏季 | "):
             name = name.replace(pre, "")
         self._open_anime(aid, name.split("▶")[0].strip(), item.get("ep", 0), item.get("line"))
 
-    # ---------- 番剧详情 ----------
+    # ---------- 详情 ----------
     def _open_anime(self, aid, name, ep_index=0, line=None):
         if self.busy:
             return
@@ -622,7 +767,6 @@ class AnimeTVAppView(BoxLayout):
             return
         self.detail_data = d
         self.ep_list = eps
-        # 选择线路: 默认 free 线路中第一条; 若指定则按指定
         lines = []
         for e in eps:
             if e["line"] not in lines:
@@ -631,7 +775,6 @@ class AnimeTVAppView(BoxLayout):
             self.current_line = line
         else:
             self.current_line = eps[0]["line"]
-        # 计算该番内集序号(非全局序号)
         self.ep_index = min(max(ep_index, 0), len(eps) - 1)
 
         tags = " ".join(d.get("tags", []))
@@ -640,17 +783,14 @@ class AnimeTVAppView(BoxLayout):
                 f"状态: {d.get('status','')} | {d.get('uptodate','')}\n"
                 f"标签: {tags}\n\n"
                 f"简介: {(d.get('intro') or '暂无')[:150]}\n\n"
-                f"⬇ 下方选择集数, OK 播放; 左右键切换线路")
+                f"⬇ 下方选择集数, OK 内置播放; 也可「外部播放」")
         self._info(info)
-
-        # 集数列表(全部, 长番自动分页显示前 300)
         self._render_eps(eps)
 
     def _render_eps(self, eps):
         self.grid_eps.clear_widgets()
         max_show = 300
-        shown = eps[:max_show]
-        for i, e in enumerate(shown):
+        for i, e in enumerate(eps[:max_show]):
             b = self._mk_button(e["title"], cb=lambda inst, i=i: self._select_ep(i),
                                 height=50, fs=24)
             b.on_ok = lambda i=i: self._select_ep(i)
@@ -670,10 +810,7 @@ class AnimeTVAppView(BoxLayout):
         if self.busy or not self.ep_list:
             return
         self.ep_index = min(i, len(self.ep_list) - 1)
-        e = self.ep_list[self.ep_index]
-        self._info(f"《{self.cur_name}》 {e['title']}\n\n⏳ 正在获取播放地址...")
-        self.busy = True
-        self._thread(lambda: self._play_worker())
+        self._start_resolve()
 
     def _play_current(self):
         if self.busy or not self.ep_list:
@@ -681,13 +818,15 @@ class AnimeTVAppView(BoxLayout):
                 self.busy = False
                 self._info("请先选择一部番剧")
             return
+        self._start_resolve()
+
+    def _start_resolve(self):
         e = self.ep_list[self.ep_index]
         self._info(f"《{self.cur_name}》 {e['title']}\n\n⏳ 正在获取播放地址...")
         self.busy = True
         self._thread(lambda: self._play_worker())
 
     def _play_worker(self):
-        """按当前线路解析直链, 失败自动尝试其他线路"""
         eps = self.ep_list
         idx = self.ep_index
         order = []
@@ -703,7 +842,6 @@ class AnimeTVAppView(BoxLayout):
             tried.append(e["line_label"])
             try:
                 url = parse_video_url(e["enc"], e["vip"])
-                # 保存历史
                 self._add_history(self.cur_aid, self.cur_name, e["title"], i, e["line"])
                 self._ui(lambda url=url, e=e: self._play_ui(url, e))
                 return
@@ -713,23 +851,72 @@ class AnimeTVAppView(BoxLayout):
 
     def _play_ui(self, url, e):
         self.busy = False
-        msg = self.player.play(url)
-        self._update_play_btn()
-        self._info(f"《{self.cur_name}》 {e['title']}\n"
-                   f"线路: {e['line_label']}  [{msg}]\n\n"
-                   f"m3u8: {url}\n\n"
-                   f"📌 若播放器未自动打开, 请安装 VLC / MX Player")
-        # 调试: 复制到剪贴板
-        try:
-            from kivy.core.clipboard import Clipboard
-            Clipboard.copy(url)
-        except Exception:
-            pass
+        self.open_player(url, e)
 
     def _play_fail(self, tried):
         self.busy = False
         self._info(f"播放失败: 线路 {','.join(tried)} 均无法解析\n\n"
-                   f"可按「线路」键切换其他线路重试, 或换一部番")
+                   f"可按「换线路」切换其他线路重试, 或换一部番")
+
+    # ---------- 内置播放器 ----------
+    def open_player(self, url, e):
+        """打开内置播放器全屏页"""
+        if self.player_screen is None:
+            self.busy = False
+            self._info(f"内置播放器不可用\n\n直链: {url}")
+            return
+        self.is_playing = True
+        self.player_screen.opacity = 1
+        self.player_screen.disabled = False
+        self.player_screen.play(url, e)
+
+    def close_player(self):
+        """退出播放页"""
+        if self.player_screen is None:
+            self.is_playing = False
+            return
+        try:
+            self.player_screen.video.state = 'stop'
+        except Exception:
+            pass
+        self.player_screen.opacity = 0
+        self.player_screen.disabled = True
+        self.is_playing = False
+
+    # ---------- 外部播放 ----------
+    def _external_current(self):
+        if self.busy or not self.ep_list:
+            self.busy = False
+            self._info("请先选择一部番剧")
+            return
+        self._info(f"正在获取直链, 稍后弹出播放器选择...")
+        self.busy = True
+        self._thread(lambda: self._external_worker())
+
+    def _external_worker(self):
+        eps = self.ep_list
+        idx = self.ep_index
+        order = [idx]
+        if self.current_line:
+            for i, e in enumerate(eps):
+                if e["line"] == self.current_line:
+                    order.append(i)
+        tried = []
+        for i in order:
+            e = eps[i]
+            tried.append(e["line_label"])
+            try:
+                url = parse_video_url(e["enc"], e["vip"])
+                self._ui(lambda url=url: self._external_ui(url))
+                return
+            except Exception:
+                continue
+        self._ui(lambda tried=tried: self._play_fail(tried))
+
+    def _external_ui(self, url):
+        self.busy = False
+        msg = self.player.play(url)
+        self._info(f"外部播放: {msg}\n\n{url}\n\n提示: 系统选择器会列出所有可播放的应用")
 
     def _add_history(self, aid, name, ep, ep_idx, line):
         try:
@@ -752,8 +939,10 @@ class AnimeTVAppView(BoxLayout):
         else:
             self.busy = False
             self._info("已经是最后一集了")
+            if self.is_playing:
+                self.close_player()
 
-    # ---------- 切换线路 ----------
+    # ---------- 线路 ----------
     def _switch_line(self):
         if not self.ep_list:
             self.busy = False
@@ -768,38 +957,34 @@ class AnimeTVAppView(BoxLayout):
         i = lines.index(cur)
         self.current_line = lines[(i + 1) % len(lines)]
         self._update_line_btn()
-        e = self.ep_list[self.ep_index]
-        self._info(f"已切换到线路: {e['line_label']}\n\n按 OK 开始播放")
         self.busy = False
+        # 播放中: 立即用新线路重播当前集
+        if self.is_playing:
+            self._start_resolve()
 
     def _update_line_btn(self):
-        if self.ep_list:
-            e = self.ep_list[self.ep_index]
-            self.btn_line.text = f"线路: {e['line_label']}"
+        for e in self.ep_list:
+            if e["line"] == self.current_line:
+                self.btn_line.text = f"线路: {e['line_label']}"
+                return
 
     def _update_play_btn(self):
         if self.ep_list:
             e = self.ep_list[self.ep_index]
             self.btn_play.text = f"▶ 播放 {e['title']}"
 
-    def _copy_url(self):
-        self.busy = False
-        self._info("复制功能: 播放时会自动复制直链到剪贴板\n可粘贴到手机浏览器/播放器测试")
-
     # ---------- 返回键 ----------
     def on_back(self):
-        # 已聚焦输入框 -> 收起
         if self.nav.editable is not None and self.nav.editable.focus:
             self.nav.editable.focus = False
             return True
-        # 其他情况: 返回首页(不退出, 防止误退)
         if self.cur_aid is not None:
             self.cur_aid = None
             self._show_home()
         return True
 
 # ================================================================
-# 5. App
+# 6. App (root = FloatLayout, 播放页叠在主页之上)
 # ================================================================
 class AnimeTVApp(App):
     title = "AnimeTV 追番"
@@ -807,12 +992,21 @@ class AnimeTVApp(App):
     def build(self):
         _checkpoint("[6] App.build()")
         Window.clearcolor = (0.08, 0.09, 0.13, 1)
-        return AnimeTVAppView()
+        root = FloatLayout()
+        self.view = AnimeTVAppView()
+        root.add_widget(self.view)
+        self.player_screen = PlayerScreen(self.view)
+        self.player_screen.opacity = 0
+        self.player_screen.disabled = True
+        root.add_widget(self.player_screen)
+        self.view.player_screen = self.player_screen
+        _checkpoint("[7] root 构建完成")
+        return root
 
     def on_pause(self):
         return True
 
 if __name__ == '__main__':
-    _checkpoint("[7] 启动 Kivy")
+    _checkpoint("[8] 启动 Kivy")
     AnimeTVApp().run()
     _checkpoint("[99] 正常退出")
