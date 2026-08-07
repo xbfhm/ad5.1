@@ -2,7 +2,7 @@
 title = AnimeTV
 package.name = animetv
 package.domain = org.test
-version = 0.2
+version = 0.3
 
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,otf,ttf
@@ -10,7 +10,8 @@ source.exclude_dirs = tools,.github,.git,bin,.buildozer
 source.exclude_patterns = tools/*,buildozer.spec
 
 # 低内存关键: 移除 requests/lxml(原生库大且吃内存), 全部用标准库
-requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.0,pyjnius
+# ffpyplayer: 内置播放器(ffmpeg 内核, 支持 m3u8), 无需外部播放器
+requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.0,pyjnius,ffpyplayer
 
 android.minapi = 21
 android.api = 33
@@ -23,8 +24,8 @@ android.uses_cleartext_traffic = True
 android.fullscreen = 1
 android.wakelock = True
 
-# 该电视为 arm64-v8a (MStar MSD6A828), 单架构减半体积加快安装
-android.archs = arm64-v8a
+# 双架构保险: 电视系统若为32位镜像(部分电视厂), v7a 也能运行
+android.archs = arm64-v8a, armeabi-v7a
 
 orientation = landscape
 
